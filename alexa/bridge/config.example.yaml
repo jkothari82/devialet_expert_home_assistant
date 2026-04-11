@@ -1,0 +1,18 @@
+# Devialet Expert <-> AWS IoT Bridge configuration
+# Copy this file to config.yaml and fill in your values.
+
+iot:
+  # Your AWS IoT Core endpoint (found in AWS Console -> IoT Core -> Settings)
+  endpoint: "xxxxxxxxxxxxxx-ats.iot.us-east-1.amazonaws.com"
+
+  # IoT Thing name (must match what you created in AWS and set in Lambda env var)
+  thing_name: "devialet-expert"
+
+  # Paths to certificates (created during setup)
+  cert_path: "./certs/certificate.pem"
+  key_path: "./certs/private.key"
+  root_ca_path: "./certs/AmazonRootCA1.pem"
+
+devialet:
+  # Optional: filter by device name. Leave blank to use the first device found.
+  device_name: ""

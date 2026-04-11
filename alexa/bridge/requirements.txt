@@ -1,0 +1,2 @@
+awsiotsdk>=1.21.0
+pyyaml>=6.0

@@ -1,0 +1,15 @@
+[Unit]
+Description=Devialet Expert <-> AWS IoT Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/devialet_expert_home_assistant/alexa/bridge
+ExecStart=/usr/bin/python3 bridge.py --config config.yaml
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
