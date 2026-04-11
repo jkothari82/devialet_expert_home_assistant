@@ -1,4 +1,4 @@
-"""An unofficial remote control application for Devialet Expert amplifiers"""
+"""An unofficial remote control application for Devialet Expert amplifiers."""
 
 import asyncio
 import logging
@@ -8,37 +8,20 @@ from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
-# Volume is 0..255, corresponds to -97.5db..30db.
-
-# DB        int float       set_volume
-# -97.5dB     0 0.0         0xc2c3
-# -40.0dB   115 0.44921875  0xc220
-# -39.5db   116             0xc21e
-# -39.0db   117             0xc21c
-# -38.5db   118             0xc21a
-# -35.0db   125             0xc20c
-# -30.0dB   135 0.          0xc1f0
-# -20.0dB   155 0.          0xc1a0
-# -10.0dB   175 0.68627451  0xc120
-# 0dB       195 0.76470588  0x0000
-# 10.0dB    215 0.84313725  0x4120
-# 20.0dB    235 0.          0x41a0
-# 30.0dB    255 1           0x41f0
-
 STATUS_PORT = 45454
 COMMAND_PORT = 45455
 MAX_VOLUME_DB = -10
 MAX_VOLUME_INT = 175
-NUM_OF_TRANSMITS_PER_COMMAND = 2
+MIN_STATUS_PACKET_SIZE = 311
 
 
 def _crc16(data: bytearray):
-    """Internal function to calculate a CRC-16/CCITT-FALSE from the given bytearray"""
+    """Calculate a CRC-16/CCITT-FALSE from the given bytearray."""
     if data is None:
         return 0
     crc = 0xFFFF
-    for i in enumerate(data):
-        crc ^= data[i[0]] << 8
+    for byte in data:
+        crc ^= byte << 8
         for _ in range(8):
             if (crc & 0x8000) > 0:
                 crc = (crc << 1) ^ 0x1021
@@ -67,21 +50,18 @@ class Source(NamedTuple):
 
 
 class Device:
-    num_packets: int = 0
-    num_commands: int = 0
-    name: str = None
-    source: int = None
-    sources: list[Source] = []
-    power: bool = False
-    muted: bool = False
-    volume: int = 0
-    ip_address: str = None
-
     def __init__(self, status_data: bytearray, addr) -> None:
-        self.ip_address = addr[0]
-        self.name = status_data[19:50].decode("UTF-8").replace("\x00", "")
-        self.sources = []
-        self.source = (status_data[308] & 0x3C) >> 2
+        if len(status_data) < MIN_STATUS_PACKET_SIZE:
+            raise ValueError(
+                f"Status packet too short: {len(status_data)} bytes "
+                f"(need {MIN_STATUS_PACKET_SIZE})"
+            )
+        self.num_packets: int = 0
+        self.num_commands: int = 0
+        self.ip_address: str = addr[0]
+        self.name: str = status_data[19:50].decode("UTF-8").replace("\x00", "")
+        self.sources: list[Source] = []
+        self.source: int = (status_data[308] & 0x3C) >> 2
         for i in range(0, 15):
             is_enabled = int(chr(status_data[52 + i * 17]))
             is_selected = i == self.source
@@ -91,9 +71,9 @@ class Device:
                 .replace("\x00", "")
             )
             self.sources.append(Source(name, i, is_enabled, is_selected))
-        self.power = (status_data[307] & 0x80) != 0
-        self.muted = (status_data[308] & 0x2) != 0
-        self.volume = status_data[310]
+        self.power: bool = (status_data[307] & 0x80) != 0
+        self.muted: bool = (status_data[308] & 0x2) != 0
+        self.volume: int = status_data[310]
 
     def update(self, device_update) -> bool:
         """Update this Device object based on a newer UDP status update, provided as a Device.
@@ -178,9 +158,7 @@ class Device:
         await self.async_set_volume_int(volume)
 
     async def async_set_volume_int(self, volume):
-        if volume > MAX_VOLUME_INT:
-            volume = MAX_VOLUME_INT
-        
+        volume = max(0, min(volume, MAX_VOLUME_INT))
         await self.async_set_volume_db((volume - 195) / 2.0)
 
     async def async_set_volume_db(self, volume_db):
@@ -226,7 +204,7 @@ class Device:
         loop = asyncio.get_running_loop()
 
         on_close = loop.create_future()
-        transport, protocol = await loop.create_datagram_endpoint(
+        transport, _ = await loop.create_datagram_endpoint(
             lambda: SendCommandProtocol(command, on_close, times, self),
             remote_addr=(self.ip_address, COMMAND_PORT),
         )
@@ -249,37 +227,37 @@ class SendCommandProtocol:
         self.command[0] = 0x44
         self.command[1] = 0x72
 
-        if self.device.num_packets > 0xffff:
+        if self.device.num_packets > 0xFFFF:
             self.device.num_packets = 0
-        if self.device.num_commands > 0xffff:
+        if self.device.num_commands > 0xFFFF:
             self.device.num_commands = 0
 
-        self.command[2] = (self.device.num_packets & 0xff00) >> 8
-        self.command[3] = self.device.num_packets & 0x00ff
-        self.command[4] = (self.device.num_commands & 0xff00) >> 8
-        self.command[5] = self.device.num_commands & 0x00ff
-        
+        self.command[2] = (self.device.num_packets & 0xFF00) >> 8
+        self.command[3] = self.device.num_packets & 0x00FF
+        self.command[4] = (self.device.num_commands & 0xFF00) >> 8
+        self.command[5] = self.device.num_commands & 0x00FF
+
         crc = _crc16(self.command[0:12])
         self.command[12] = (crc & 0xFF00) >> 8
         self.command[13] = crc & 0x00FF
 
     def connection_made(self, transport):
         self.transport = transport
-        for i in range(self.times):
+        for _ in range(self.times):
             self.prepare_command()
             self.device.num_packets += 1
             self.transport.sendto(self.command)
         self.device.num_commands += 1
-        self.transport.close()  # Queue up the transport to be closed once tx buffers are cleared.
 
     def datagram_received(self, data, addr):
-        logger.info("SendCommandProtocol - Received response?!")
+        logger.debug("Unexpected response from device")
 
     def error_received(self, exc):
-        logger.error("Error received:", exc)
+        logger.error("Error sending command: %s", exc)
 
     def connection_lost(self, exc):
-        self.on_close.set_result(True)
+        if not self.on_close.done():
+            self.on_close.set_result(True)
 
 
 class StatusProtocol:
@@ -305,46 +283,36 @@ class StatusProtocol:
 
 class NetworkController:
     def __init__(self) -> None:
-        # Device name -> Device object
-        self.devices = {}
+        self.devices: dict[str, Device] = {}
         self.status_transport = None
         self.status_protocol = None
-        self.on_new_device = []
-        self.on_device_update = []
+        self.on_new_device: list = []
+        self.on_device_update: list = []
 
     async def async_on_status(self, data, addr):
-        device_update = Device(data, addr)
-        aws = []
+        try:
+            device_update = Device(data, addr)
+        except (ValueError, UnicodeDecodeError) as exc:
+            logger.debug("Ignoring malformed status packet from %s: %s",
+                         addr, exc)
+            return
+
+        callbacks = []
         if device_update.name not in self.devices:
-            # logger.info(f"New expert device: {device_update}")
             self.devices[device_update.name] = device_update
             for listener in self.on_new_device:
-                aws.append(listener(device_update))
+                callbacks.append(listener(device_update))
         else:
             new_state = self.devices[device_update.name].update(device_update)
-            # if new_state:
-            #     logger.info(f"Expert device has update w/ new state: {device_update}")
             for listener in self.on_device_update:
-                aws.append(listener(self.devices[device_update.name], new_state))
-        await asyncio.gather(*aws)
-
-
-    def on_status(self, device_update):
-        if device_update.name not in self.devices:
-            logger.info(f"New expert device: {device_update}")
-            self.devices[device_update.name] = device_update
-            for listener in self.on_new_device:
-                listener(device_update)
-        else:
-            new_state = self.devices[device_update.name].update(device_update)
-            if new_state:
-                logger.info(f"Expert device has update w/ new state: {device_update}")
-            for listener in self.on_device_update:
-                listener(self.devices[device_update.name], new_state)
+                callbacks.append(
+                    listener(self.devices[device_update.name], new_state))
+        await asyncio.gather(*callbacks)
 
     async def listen(self):
-        """Creates a UDP listener for Devialet status messages."""
-        logger.info("Starting Devialet UDP Status Listening Service")
+        """Start a UDP listener for Devialet status broadcasts."""
+        logger.info("Starting Devialet UDP status listener on port %d",
+                     STATUS_PORT)
         loop = asyncio.get_running_loop()
         (
             self.status_transport,
@@ -357,58 +325,18 @@ class NetworkController:
         )
 
     async def close(self):
-        """Stops the UDP listener."""
+        """Stop the UDP listener."""
         if self.status_transport:
-            logger.info("Stopped Devialet UDP Status Listening Service")
             self.status_transport.close()
             self.status_transport = None
             self.status_protocol = None
+            logger.info("Stopped Devialet UDP status listener")
 
-    def add_listener_on_new_device(self, callable):
-        self.on_new_device.append(callable)
+    def add_listener_on_new_device(self, callback):
+        self.on_new_device.append(callback)
 
-    def add_listener_on_device_update(self, callable):
-        self.on_device_update.append(callable)
+    def add_listener_on_device_update(self, callback):
+        self.on_device_update.append(callback)
 
     def get_devices(self):
-        return [v for v in self.devices.values()]
-
-
-async def test_on_new_device(device):
-    print(f"New device: {device}")
-    # await device.async_turn_on()
-    # for v in range(0, 235):
-    #     await device.async_set_volume_float(v/255)
-    #     await asyncio.sleep(0.1)
-    
-    # logger.info(f'Source {device.get_source()}')
-    # logger.info(f'Sources {device.get_sources()}')
-    
-    # await asyncio.sleep(1)
-    # await device.async_mute(True)
-    # await asyncio.sleep(1)
-    # await device.async_mute(False)
-    # await asyncio.sleep(1)
-    # await device.async_set_volume_float(115)
-
-
-async def test_on_device_update(device, new_state):
-    if new_state:
-        print(f"Device update: {device}")
-    # else:
-    #     print(f"Device ping: {device.name}")
-
-
-async def test_discovery():
-    nc = NetworkController()
-    nc.add_listener_on_device_update(test_on_device_update)
-    nc.add_listener_on_new_device(test_on_new_device)
-    await nc.listen()
-    await asyncio.sleep(5)
-    await nc.close()
-    logger.info(f"Devices: {nc.get_devices()}")
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level="INFO")
-    asyncio.run(test_discovery())
+        return list(self.devices.values())

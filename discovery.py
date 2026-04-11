@@ -2,7 +2,6 @@
 import logging
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (

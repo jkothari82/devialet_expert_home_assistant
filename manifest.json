@@ -1,16 +1,16 @@
 {
-    "domain": "devialet_expert",
-    "name": "Devialet Expert",
-    "config_flow": true,
-    "documentation": "https://www.github.com/jprouty",
-    "codeowners": [
-      "@jprouty"
-    ],
-    "iot_class": "local_polling",
-    "version": "1.0.0",
-    "dependencies": [],
-    "after_dependencies": [
-      "persistent_notification"
-    ],
-    "requirements": []
-  }
+  "domain": "devialet_expert",
+  "name": "Devialet Expert",
+  "config_flow": true,
+  "documentation": "https://github.com/jkothari82/devialet_expert_home_assistant",
+  "codeowners": [
+    "@jkothari82"
+  ],
+  "iot_class": "local_push",
+  "version": "1.0.0",
+  "dependencies": [],
+  "after_dependencies": [
+    "persistent_notification"
+  ],
+  "requirements": []
+}
