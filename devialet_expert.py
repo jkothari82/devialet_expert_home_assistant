@@ -248,6 +248,9 @@ class SendCommandProtocol:
             self.device.num_packets += 1
             self.transport.sendto(self.command)
         self.device.num_commands += 1
+        # Closing triggers connection_lost (once tx buffers drain), which
+        # resolves on_close and unblocks async_send_command.
+        self.transport.close()
 
     def datagram_received(self, data, addr):
         logger.debug("Unexpected response from device")

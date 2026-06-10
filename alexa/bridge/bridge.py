@@ -19,7 +19,7 @@ from pathlib import Path
 
 # Allow importing devialet_expert from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from devialet_expert import NetworkController, Device  # noqa: E402
+from devialet_expert import NetworkController  # noqa: E402
 
 from awscrt import io, mqtt  # noqa: E402
 from awsiot import mqtt_connection_builder  # noqa: E402

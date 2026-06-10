@@ -1,0 +1,3 @@
+# Only needed for the menu bar app (devialet_menubar.py).
+# The CLI (devialet_cli.py) has zero dependencies beyond the standard library.
+rumps>=0.4.0
