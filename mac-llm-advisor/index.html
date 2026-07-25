@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SILICON FIT — Local LLM advisor for Apple silicon</title>
+<style>
+  /* ============================================================
+     SILICON FIT — instrument-panel for local LLMs on Apple silicon
+     Dark-only by design (bench instrument). Chart palette validated
+     against surface #191b20 (dataviz six-checks).
+     ============================================================ */
+  :root {
+    --bg:        #0b0c0f;
+    --panel:     #14161b;
+    --panel-2:   #191b20;   /* chart surface (validated) */
+    --panel-3:   #1f222a;
+    --hairline:  rgba(255,255,255,0.08);
+    --hairline-2:rgba(255,255,255,0.14);
+    --ink:       #eef0f3;
+    --ink-2:     #9aa3af;
+    --muted:     #646b76;
+    --accent:    #e8a33d;   /* chrome accent only — never a data series */
+    --accent-dim:rgba(232,163,61,0.14);
+    /* data series (dark-validated) */
+    --c-weights: #3987e5;   /* model weights */
+    --c-kv:      #199e70;   /* KV cache */
+    --c-over:    #6a7280;   /* runtime overhead (neutral, not a series) */
+    /* status (reserved — always icon + label) */
+    --st-good:    #0ca30c;
+    --st-warn:    #fab219;
+    --st-serious: #ec835a;
+    --st-crit:    #d03b3b;
+    --f-display: "Avenir Next Condensed", "Futura", "Barlow Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
+    --f-body:    "Avenir Next", "Avenir", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+    --f-mono:    "SF Mono", "Menlo", ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { color-scheme: dark; }
+  body {
+    background: var(--bg);
+    background-image: radial-gradient(rgba(255,255,255,0.045) 1px, transparent 1px);
+    background-size: 26px 26px;
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ::selection { background: var(--accent-dim); }
+
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 0 24px 96px; }
+
+  /* ---------- header / nameplate ---------- */
+  header { padding: 44px 0 0; }
+  .nameplate { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 22px; }
+  .brand {
+    font-family: var(--f-display);
+    font-weight: 700;
+    font-size: clamp(40px, 6vw, 64px);
+    letter-spacing: 0.02em;
+    line-height: 0.95;
+    text-transform: uppercase;
+  }
+  .brand .slash { color: var(--accent); }
+  .tagline { color: var(--ink-2); font-size: 15px; max-width: 560px; }
+  .tagline b { color: var(--ink); font-weight: 600; }
+  .ruler {
+    margin-top: 20px; height: 14px;
+    background:
+      repeating-linear-gradient(90deg, var(--hairline-2) 0 1px, transparent 1px 8px) bottom / 100% 6px no-repeat,
+      repeating-linear-gradient(90deg, var(--hairline-2) 0 1px, transparent 1px 40px) bottom / 100% 14px no-repeat;
+    border-bottom: 1px solid var(--hairline-2);
+  }
+  .readout-strip {
+    display: flex; flex-wrap: wrap; gap: 0;
+    border: 1px solid var(--hairline); border-top: none;
+    background: var(--panel);
+  }
+  .readout { padding: 12px 20px; border-right: 1px solid var(--hairline); min-width: 130px; }
+  .readout:last-child { border-right: none; }
+  .readout .k { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  .readout .v { font-family: var(--f-mono); font-size: 17px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .readout .v small { font-size: 11px; color: var(--ink-2); }
+  .readout .v .hot { color: var(--accent); }
+
+  /* ---------- layout ---------- */
+  .cols { display: grid; grid-template-columns: 316px 1fr; gap: 22px; margin-top: 22px; align-items: start; }
+  @media (max-width: 980px) { .cols { grid-template-columns: 1fr; } .rail { position: static !important; } }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    position: relative;
+  }
+  .panel::before, .panel::after {
+    content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none;
+    border-color: var(--hairline-2); border-style: solid;
+  }
+  .panel::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; }
+  .panel::after  { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
+  .panel-h {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 16px; border-bottom: 1px solid var(--hairline);
+  }
+  .panel-h .tick { width: 14px; height: 1px; background: var(--accent); flex: none; }
+  .panel-h h2 {
+    font-family: var(--f-display); font-weight: 600; font-size: 15px;
+    letter-spacing: 0.18em; text-transform: uppercase;
+  }
+  .panel-h .aux { margin-left: auto; font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+  .panel-b { padding: 16px; }
+
+  .rail { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 22px; }
+
+  /* ---------- machine controls ---------- */
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+  select, input[type="search"] {
+    width: 100%; padding: 9px 10px;
+    background: var(--panel-3); color: var(--ink);
+    border: 1px solid var(--hairline-2); border-radius: 3px;
+    font-family: var(--f-mono); font-size: 13px;
+    outline: none; appearance: auto;
+  }
+  select:focus, input[type="search"]:focus { border-color: var(--accent); }
+  .specs { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--hairline); border: 1px solid var(--hairline); margin-top: 4px; }
+  .spec { background: var(--panel-2); padding: 10px 12px; }
+  .spec .k { font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .spec .v { font-family: var(--f-mono); font-size: 15px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .spec .v small { font-size: 10.5px; color: var(--ink-2); }
+  .rail-note { font-size: 11.5px; color: var(--muted); margin-top: 12px; line-height: 1.55; }
+  .rail-note code { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-2); }
+
+  /* ---------- filters ---------- */
+  .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--hairline); }
+  .filters input[type="search"] { width: 200px; flex: none; }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pill {
+    font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em;
+    padding: 5px 10px; border: 1px solid var(--hairline-2); border-radius: 999px;
+    background: transparent; color: var(--ink-2); cursor: pointer;
+  }
+  .pill:hover { color: var(--ink); border-color: var(--muted); }
+  .pill.on { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+  .chk { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-2); cursor: pointer; user-select: none; }
+  .chk input { accent-color: var(--accent); }
+  .filters .sort { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .filters .sort label { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .filters .sort select { width: auto; padding: 6px 8px; font-size: 12px; }
+
+  /* ---------- table ---------- */
+  .tbl-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 880px; }
+  thead th {
+    font-family: var(--f-mono); font-size: 10px; font-weight: 500;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+    text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--hairline-2);
+    white-space: nowrap;
+  }
+  tbody td { padding: 12px 14px; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover td { background: rgba(255,255,255,0.025); }
+  tbody tr.sel td { background: var(--accent-dim); }
+  tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  .m-name { font-weight: 600; font-size: 13.5px; }
+  .m-sub { font-family: var(--f-mono); font-size: 10.5px; color: var(--muted); margin-top: 3px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .tag { border: 1px solid var(--hairline-2); border-radius: 2px; padding: 0.5px 5px; font-size: 9px; letter-spacing: 0.08em; color: var(--ink-2); text-transform: uppercase; }
+  .tag.moe { color: var(--accent); border-color: rgba(232,163,61,0.4); }
+  .mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; font-size: 12.5px; }
+  .dim { color: var(--ink-2); }
+  .quant-chip {
+    display: inline-block; font-family: var(--f-mono); font-size: 11px;
+    background: var(--panel-3); border: 1px solid var(--hairline-2); border-radius: 3px;
+    padding: 3px 7px; white-space: nowrap;
+  }
+
+  /* status badges — icon + label, never color alone */
+  .st { display: inline-flex; align-items: center; gap: 6px; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.06em; white-space: nowrap; }
+  .st .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .st-fit    .dot { background: var(--st-good); }    .st-fit    { color: #7ed07e; }
+  .st-tight  .dot { background: var(--st-warn); border-radius: 999px; } .st-tight { color: var(--st-warn); }
+  .st-raise  .dot { background: var(--st-serious); transform: rotate(45deg); } .st-raise { color: var(--st-serious); }
+  .st-no     .dot { background: var(--st-crit); clip-path: polygon(50% 0,100% 50%,50% 100%,0 50%); } .st-no { color: #e88c8c; }
+
+  /* speed bar (single measure — one hue) */
+  .speed { display: flex; align-items: center; gap: 10px; min-width: 150px; }
+  .speed .track { flex: 1; height: 8px; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; }
+  .speed .fill { height: 100%; background: var(--c-weights); border-radius: 4px; transition: width 0.45s cubic-bezier(.2,.8,.2,1); }
+  .speed .val { font-family: var(--f-mono); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 74px; text-align: right; }
+  .speed .val small { color: var(--muted); font-size: 10px; }
+
+  .tier { font-family: var(--f-display); font-size: 17px; font-weight: 600; letter-spacing: 0.04em; }
+  .hf-link { font-family: var(--f-mono); font-size: 10.5px; color: var(--muted); }
+  .hf-link:hover { color: var(--accent); }
+  .empty-row td { text-align: center; color: var(--muted); padding: 34px; cursor: default; }
+  .tbl-foot { padding: 10px 16px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--hairline); }
+
+  /* ---------- bench (detail) ---------- */
+  .bench { margin-top: 22px; display: grid; grid-template-columns: 1.25fr 1fr; gap: 22px; align-items: start; }
+  @media (max-width: 980px) { .bench { grid-template-columns: 1fr; } }
+  .bench-title { font-family: var(--f-display); font-size: 24px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; }
+  .bench-sub { color: var(--ink-2); font-size: 12.5px; margin-top: 4px; }
+  .bench-blurb { color: var(--ink-2); font-size: 12.5px; margin-top: 10px; border-left: 2px solid var(--hairline-2); padding-left: 10px; }
+
+  .qgrid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .qbtn {
+    font-family: var(--f-mono); font-size: 11px; padding: 6px 9px;
+    background: var(--panel-3); color: var(--ink-2);
+    border: 1px solid var(--hairline-2); border-radius: 3px; cursor: pointer;
+  }
+  .qbtn:hover { color: var(--ink); }
+  .qbtn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+  .qbtn .sz { color: var(--muted); margin-left: 5px; }
+  .qbtn.on .sz { color: rgba(232,163,61,0.7); }
+
+  .ctx-row { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+  .ctx-row label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); flex: none; }
+  input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .ctx-val { font-family: var(--f-mono); font-size: 13px; min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* memory meter — stacked bar, 2px gaps, rounded data ends */
+  .meter-wrap { margin-top: 18px; }
+  .meter-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .meter-head .t { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  .meter-head .r { font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .meter {
+    position: relative; height: 26px;
+    background: var(--panel-2); border: 1px solid var(--hairline); border-radius: 5px;
+  }
+  .meter .seg {
+    position: absolute; top: 3px; bottom: 3px; border-radius: 2px;
+    transition: left 0.4s cubic-bezier(.2,.8,.2,1), width 0.4s cubic-bezier(.2,.8,.2,1);
+  }
+  .meter .seg.first { border-top-left-radius: 4px; border-bottom-left-radius: 4px; }
+  .meter .seg-label {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    font-family: var(--f-mono); font-size: 9.5px; color: var(--ink);
+    left: 6px; white-space: nowrap; pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.65);
+  }
+  .meter .tickline { position: absolute; top: -5px; bottom: -5px; width: 2px; border-radius: 1px; }
+  .meter .tickline.budget { background: var(--accent); }
+  .meter .tickline.raised { background: var(--st-serious); }
+  .meter-ticklbl { position: relative; height: 30px; margin-top: 6px; }
+  .meter-ticklbl span {
+    position: absolute; top: 0; transform: translateX(-50%);
+    font-family: var(--f-mono); font-size: 9.5px; color: var(--muted); white-space: nowrap;
+  }
+  .meter-ticklbl span.row2 { top: 15px; }
+  .meter-ticklbl span.edge { transform: translateX(-100%); }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; }
+  .legend .li { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--ink-2); }
+  .legend .sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  .legend .li b { color: var(--ink); font-family: var(--f-mono); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+  .verdict { margin-top: 16px; padding: 11px 14px; border: 1px solid var(--hairline-2); border-radius: 4px; font-size: 12.5px; color: var(--ink-2); display: flex; gap: 10px; align-items: flex-start; }
+  .verdict .st { margin-top: 1px; }
+
+  /* tune sheet */
+  .tune-row { display: flex; justify-content: space-between; gap: 14px; padding: 9px 0; border-bottom: 1px dashed var(--hairline); }
+  .tune-row:last-of-type { border-bottom: none; }
+  .tune-row .k { font-size: 11px; letter-spacing: 0.06em; color: var(--ink-2); flex: none; padding-top: 1px; }
+  .tune-row .v { font-family: var(--f-mono); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+  .tune-row .v small { display: block; color: var(--muted); font-size: 10px; margin-top: 2px; font-family: var(--f-body); }
+  .tune-notes { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--hairline); }
+  .tune-notes li { list-style: none; position: relative; padding-left: 16px; font-size: 11.5px; color: var(--ink-2); margin-bottom: 7px; line-height: 1.5; }
+  .tune-notes li::before { content: "▸"; position: absolute; left: 0; color: var(--accent); font-size: 10px; top: 2px; }
+  .tune-notes code, .verdict code { font-family: var(--f-mono); font-size: 10.5px; background: var(--panel-3); border: 1px solid var(--hairline); border-radius: 3px; padding: 1px 5px; color: var(--ink); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--f-display); font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase;
+    background: var(--accent); color: #17130a; border: none; border-radius: 3px;
+    padding: 10px 18px; cursor: pointer; margin-top: 14px;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn.ok { background: var(--st-good); color: #06170b; }
+
+  .placeholder { padding: 48px 24px; text-align: center; color: var(--muted); font-size: 13px; }
+  .placeholder .big { font-family: var(--f-display); text-transform: uppercase; letter-spacing: 0.2em; font-size: 16px; color: var(--ink-2); margin-bottom: 6px; }
+
+  /* tooltip */
+  #tip {
+    position: fixed; z-index: 50; pointer-events: none; display: none;
+    background: #22252d; border: 1px solid var(--hairline-2); border-radius: 4px;
+    padding: 7px 10px; font-family: var(--f-mono); font-size: 11px; color: var(--ink);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5); max-width: 260px;
+  }
+  #tip .t2 { color: var(--ink-2); font-family: var(--f-body); font-size: 10.5px; margin-top: 2px; }
+
+  /* footer */
+  .method { margin-top: 40px; }
+  .method .panel-b { columns: 2; column-gap: 36px; font-size: 12px; color: var(--ink-2); }
+  @media (max-width: 800px) { .method .panel-b { columns: 1; } }
+  .method p { margin-bottom: 10px; break-inside: avoid; }
+  .method b { color: var(--ink); font-weight: 600; }
+  .method code { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink); }
+  .colophon { margin-top: 20px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+
+  /* load stagger */
+  @media (prefers-reduced-motion: no-preference) {
+    .rise { opacity: 0; transform: translateY(10px); animation: rise 0.55s cubic-bezier(.2,.8,.2,1) forwards; }
+    .rise.d1 { animation-delay: 0.05s; } .rise.d2 { animation-delay: 0.14s; }
+    .rise.d3 { animation-delay: 0.23s; } .rise.d4 { animation-delay: 0.32s; }
+    @keyframes rise { to { opacity: 1; transform: none; } }
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="rise d1">
+    <div class="nameplate">
+      <div class="brand">Silicon<span class="slash">/</span>Fit</div>
+      <p class="tagline">Which <b>Hugging Face</b> models run best on your Mac — and how to tune <b>LM Studio</b> for them. Pick your machine, compare fit &amp; speed, copy the settings.</p>
+    </div>
+    <div class="ruler" aria-hidden="true"></div>
+    <div class="readout-strip" id="readouts"></div>
+  </header>
+
+  <div class="cols">
+    <!-- ================= machine rail ================= -->
+    <aside class="rail rise d2">
+      <section class="panel" aria-label="Your machine">
+        <div class="panel-h"><span class="tick"></span><h2>Your Machine</h2><span class="aux">INPUT</span></div>
+        <div class="panel-b">
+          <div class="field">
+            <label for="chipSel">Apple silicon chip</label>
+            <select id="chipSel"></select>
+          </div>
+          <div class="field">
+            <label for="ramSel">Unified memory</label>
+            <select id="ramSel"></select>
+          </div>
+          <div class="specs" id="chipSpecs"></div>
+          <p class="rail-note">GPU budget = what macOS lets Metal wire by default (~⅔ of RAM up to 36 GB, ~¾ above). You can raise it with <code>sysctl iogpu.wired_limit_mb</code> — the tune sheet tells you when that helps.</p>
+        </div>
+      </section>
+      <section class="panel" aria-label="Reading the table">
+        <div class="panel-h"><span class="tick"></span><h2>Key</h2></div>
+        <div class="panel-b" style="display:flex;flex-direction:column;gap:9px;">
+          <span class="st st-fit"><span class="dot"></span>FITS — comfortable, daily-driver headroom</span>
+          <span class="st st-tight"><span class="dot"></span>TIGHT — loads, close other apps</span>
+          <span class="st st-raise"><span class="dot"></span>RAISE LIMIT — needs the sysctl bump</span>
+          <span class="st st-no"><span class="dot"></span>NO FIT — beyond this machine</span>
+        </div>
+      </section>
+    </aside>
+
+    <!-- ================= model table ================= -->
+    <main class="panel rise d3" aria-label="Model comparison">
+      <div class="panel-h"><span class="tick"></span><h2>Model Bench</h2><span class="aux" id="tblAux"></span></div>
+      <div class="filters">
+        <input type="search" id="q" placeholder="Search models…" aria-label="Search models">
+        <div class="pills" id="catPills" role="group" aria-label="Category filter"></div>
+        <label class="chk"><input type="checkbox" id="hideNoFit"> hide NO FIT</label>
+        <div class="sort">
+          <label for="sortSel">Sort</label>
+          <select id="sortSel">
+            <option value="best">Best for this Mac</option>
+            <option value="quality">Quality tier</option>
+            <option value="speed">Est. speed</option>
+            <option value="size">Memory needed</option>
+            <option value="params">Parameters</option>
+          </select>
+        </div>
+      </div>
+      <div class="tbl-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Model</th><th>Rec. Quant</th><th>Mem @8K</th><th>Fit</th>
+              <th>Est. Decode</th><th>Max Ctx</th><th>Tier</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="tbl-foot">Table assumes the recommended quant + 8K context. Click a row to open it on the bench and generate LM Studio settings. Speeds are short-context decode estimates (±30%).</div>
+    </main>
+  </div>
+
+  <!-- ================= bench + tune sheet ================= -->
+  <div class="bench" id="bench">
+    <section class="panel rise d4" aria-label="Selected model detail">
+      <div class="panel-h"><span class="tick"></span><h2>On the Bench</h2><span class="aux" id="benchAux"></span></div>
+      <div class="panel-b" id="benchBody">
+        <div class="placeholder"><div class="big">No model selected</div>Click any row above to inspect memory fit and tune LM Studio for it.</div>
+      </div>
+    </section>
+    <section class="panel rise d4" aria-label="LM Studio settings">
+      <div class="panel-h"><span class="tick"></span><h2>LM Studio Tune Sheet</h2><span class="aux">OUTPUT</span></div>
+      <div class="panel-b" id="tuneBody">
+        <div class="placeholder"><div class="big">Awaiting selection</div>Settings are generated per model × machine.</div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ================= methodology ================= -->
+  <section class="panel method rise d4" aria-label="Methodology">
+    <div class="panel-h"><span class="tick"></span><h2>How the numbers are made</h2><span class="aux">EST.</span></div>
+    <div class="panel-b">
+      <p><b>Weights.</b> <code>params × bits-per-weight ÷ 8 × 1.03</code>. GGUF K-quants use effective bpw (Q4_K_M ≈ 4.85); MLX 4-bit ≈ 4.5 bpw. MoE models count <i>all</i> experts in memory but only <i>active</i> params per token for speed.</p>
+      <p><b>KV cache.</b> <code>2 × layers × KV-heads × head-dim × 2 bytes × context</code>, per model architecture (GQA aware; sliding-window models like Gemma 3 discounted). This is why context length is a memory dial, not a free lunch.</p>
+      <p><b>GPU budget.</b> macOS wires roughly ⅔ of unified memory for Metal up to 36 GB and ¾ above — that, minus ~1 GB runtime overhead, is what a model must fit into. <code>sudo sysctl iogpu.wired_limit_mb=N</code> raises it at your own risk (leave ≥6–8 GB for macOS; resets on reboot).</p>
+      <p><b>Decode speed.</b> Generation is memory-bandwidth-bound: <code>bandwidth × efficiency ÷ active-bytes-per-token</code> (≈0.6 MLX, ≈0.5 llama.cpp, ×0.7 MoE routing), capped by a GPU-compute term for small models. Long contexts and long prompts run slower; prompt ingestion scales with GPU cores instead.</p>
+      <p><b>Tiers</b> are editorial capability classes (S…C) for the model's size era — a B on 8 GB can matter more than an unusable S. Catalog curated early 2026 from popular LM Studio / Hugging Face downloads.</p>
+      <p><b>Trust but verify.</b> Everything here is an estimate to shortlist candidates — the real benchmark is your own prompt on your own machine. Not affiliated with Apple, Hugging Face, or LM Studio.</p>
+    </div>
+  </section>
+
+  <p class="colophon">SILICON/FIT · single-file tool, no network calls, your specs never leave the page. Data: public model configs &amp; community benchmarks. Status marks always pair shape + label (never color alone).</p>
+</div>
+
+<div id="tip" role="tooltip"></div>
+
+<script>
+"use strict";
+/* ============================ data ============================ */
+const CHIPS = [
+  { id:"m1",      gen:"M1", name:"M1",                bw:68,  gpu:8,  p:4,  ram:[8,16] },
+  { id:"m1pro",   gen:"M1", name:"M1 Pro",            bw:200, gpu:16, p:8,  ram:[16,32] },
+  { id:"m1max",   gen:"M1", name:"M1 Max",            bw:400, gpu:32, p:8,  ram:[32,64] },
+  { id:"m1ultra", gen:"M1", name:"M1 Ultra",          bw:800, gpu:64, p:16, ram:[64,128] },
+  { id:"m2",      gen:"M2", name:"M2",                bw:100, gpu:10, p:4,  ram:[8,16,24] },
+  { id:"m2pro",   gen:"M2", name:"M2 Pro",            bw:200, gpu:19, p:8,  ram:[16,32] },
+  { id:"m2max",   gen:"M2", name:"M2 Max",            bw:400, gpu:38, p:8,  ram:[32,64,96] },
+  { id:"m2ultra", gen:"M2", name:"M2 Ultra",          bw:800, gpu:76, p:16, ram:[64,128,192] },
+  { id:"m3",      gen:"M3", name:"M3",                bw:100, gpu:10, p:4,  ram:[8,16,24] },
+  { id:"m3pro",   gen:"M3", name:"M3 Pro",            bw:150, gpu:18, p:6,  ram:[18,36] },
+  { id:"m3max30", gen:"M3", name:"M3 Max (30-core)",  bw:300, gpu:30, p:10, ram:[36,96] },
+  { id:"m3max40", gen:"M3", name:"M3 Max (40-core)",  bw:400, gpu:40, p:12, ram:[48,64,128] },
+  { id:"m3ultra", gen:"M3", name:"M3 Ultra",          bw:800, gpu:80, p:24, ram:[96,256,512] },
+  { id:"m4",      gen:"M4", name:"M4",                bw:120, gpu:10, p:4,  ram:[16,24,32] },
+  { id:"m4pro",   gen:"M4", name:"M4 Pro",            bw:273, gpu:20, p:10, ram:[24,48,64] },
+  { id:"m4max32", gen:"M4", name:"M4 Max (32-core)",  bw:410, gpu:32, p:10, ram:[36,64] },
+  { id:"m4max40", gen:"M4", name:"M4 Max (40-core)",  bw:546, gpu:40, p:12, ram:[48,64,128] },
+];
+
+const QUANTS = {
+  ud1:  { label:"UD-IQ1_S",     bpw:1.80, engine:"GGUF", note:"dynamic 1.8-bit (Unsloth)" },
+  ud2:  { label:"UD-Q2_K_XL",   bpw:2.71, engine:"GGUF", note:"dynamic 2.7-bit (Unsloth)" },
+  q3:   { label:"Q3_K_M",       bpw:3.91, engine:"GGUF", note:"noticeable quality dip" },
+  mxfp4:{ label:"MXFP4 native", bpw:4.25, engine:"MLX",  note:"ships pre-quantized" },
+  mlx4: { label:"MLX 4-bit",    bpw:4.50, engine:"MLX",  note:"fastest on Apple silicon" },
+  q4:   { label:"Q4_K_M",       bpw:4.85, engine:"GGUF", note:"community default" },
+  q6:   { label:"Q6_K",         bpw:6.56, engine:"GGUF", note:"near-lossless" },
+  q8:   { label:"Q8_0",         bpw:8.50, engine:"GGUF", note:"overkill for most" },
+};
+const DENSE_Q = ["q3","mlx4","q4","q6","q8"];
+const BIGMOE_Q = ["q3","mlx4","q4","q6"];
+
+/* layers/kvHeads/headDim from public configs; kvScale discounts sliding-window attn */
+const MODELS = [
+  { id:"llama32-1b", name:"Llama 3.2 1B", org:"Meta", hf:"meta-llama/Llama-3.2-1B-Instruct", params:1.24, L:16, KH:8, HD:64, ctx:131072, cats:["general","tiny"], tier:"C", blurb:"Autocomplete-grade assistant; shines as a speculative-decoding draft for its 70B siblings.", search:"llama 3.2 1b" },
+  { id:"llama32-3b", name:"Llama 3.2 3B", org:"Meta", hf:"meta-llama/Llama-3.2-3B-Instruct", params:3.21, L:28, KH:8, HD:128, ctx:131072, cats:["general","tiny"], tier:"C+", blurb:"The most polite thing that fits on an 8 GB Air with room to spare.", search:"llama 3.2 3b" },
+  { id:"phi4mini", name:"Phi-4-mini 3.8B", org:"Microsoft", hf:"microsoft/Phi-4-mini-instruct", params:3.84, L:32, KH:8, HD:96, ctx:131072, cats:["general","tiny"], tier:"C+", blurb:"Dense STEM-leaning small model; strong math for its weight class.", search:"phi-4-mini" },
+  { id:"qwen3-4b", name:"Qwen3 4B (2507)", org:"Alibaba", hf:"Qwen/Qwen3-4B-Instruct-2507", params:4.02, L:36, KH:8, HD:128, ctx:262144, cats:["general","reasoning","tiny"], tier:"B", blurb:"Punches absurdly above 4B — the best all-rounder for 8–16 GB machines.", search:"qwen3 4b 2507" },
+  { id:"gemma3-4b", name:"Gemma 3 4B", org:"Google", hf:"google/gemma-3-4b-it", params:4.30, L:34, KH:4, HD:256, kvScale:0.45, ctx:131072, cats:["general","vision","tiny"], tier:"C+", blurb:"Smallest multimodal pick — reads images on a base MacBook Air.", search:"gemma 3 4b" },
+  { id:"llama31-8b", name:"Llama 3.1 8B", org:"Meta", hf:"meta-llama/Llama-3.1-8B-Instruct", params:8.03, L:32, KH:8, HD:128, ctx:131072, cats:["general"], tier:"B", blurb:"The reference 8B: enormous fine-tune ecosystem, predictable behavior.", search:"llama 3.1 8b" },
+  { id:"qwen3-8b", name:"Qwen3 8B", org:"Alibaba", hf:"Qwen/Qwen3-8B", params:8.19, L:36, KH:8, HD:128, ctx:40960, cats:["general","reasoning"], tier:"B+", blurb:"Hybrid thinking/non-thinking modes; the 16 GB sweet spot.", search:"qwen3 8b" },
+  { id:"ministral-8b", name:"Ministral 8B", org:"Mistral", hf:"mistralai/Ministral-8B-Instruct-2410", params:8.02, L:36, KH:8, HD:128, ctx:131072, cats:["general"], tier:"B", blurb:"Fast, terse European 8B with clean function-calling.", search:"ministral 8b" },
+  { id:"qwen3vl-8b", name:"Qwen3-VL 8B", org:"Alibaba", hf:"Qwen/Qwen3-VL-8B-Instruct", params:8.80, L:36, KH:8, HD:128, ctx:262144, cats:["vision","general"], tier:"B+", blurb:"Best small vision-language model — screenshots, documents, UI reading.", search:"qwen3-vl 8b" },
+  { id:"gemma3-12b", name:"Gemma 3 12B", org:"Google", hf:"google/gemma-3-12b-it", params:12.2, L:48, KH:8, HD:256, kvScale:0.45, ctx:131072, cats:["general","vision"], tier:"B", blurb:"Friendly tone, image input, long context on mid-tier RAM.", search:"gemma 3 12b" },
+  { id:"phi4", name:"Phi-4 14B", org:"Microsoft", hf:"microsoft/phi-4", params:14.7, L:40, KH:10, HD:128, ctx:16384, cats:["general"], tier:"B+", blurb:"Textbook-trained 14B; superb STEM answers, short 16K context ceiling.", search:"phi-4" },
+  { id:"qwen3-14b", name:"Qwen3 14B", org:"Alibaba", hf:"Qwen/Qwen3-14B", params:14.8, L:40, KH:8, HD:128, ctx:40960, cats:["general","reasoning"], tier:"B+", blurb:"The dense mid-weight with thinking mode; great 24–32 GB choice.", search:"qwen3 14b" },
+  { id:"r1-qwen-14b", name:"R1 Distill Qwen 14B", org:"DeepSeek", hf:"deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", params:14.8, L:48, KH:8, HD:128, ctx:131072, cats:["reasoning"], tier:"B+", blurb:"Chain-of-thought distilled from R1 — shows its work, spends tokens doing it.", search:"deepseek r1 distill qwen 14b" },
+  { id:"gptoss-20b", name:"gpt-oss-20b", org:"OpenAI", hf:"openai/gpt-oss-20b", params:21, active:3.6, L:24, KH:8, HD:64, kvScale:0.6, ctx:131072, cats:["reasoning","general","moe"], tier:"B+", quants:["mxfp4"], blurb:"MoE with 3.6B active — near-14B quality at small-model speed. Ships MXFP4; 16 GB is enough.", search:"gpt-oss-20b" },
+  { id:"mistral-small-24b", name:"Mistral Small 3.2 24B", org:"Mistral", hf:"mistralai/Mistral-Small-3.2-24B-Instruct-2506", params:24, L:40, KH:8, HD:128, ctx:131072, cats:["general","vision"], tier:"B+", blurb:"Workhorse 24B with vision; the 'GPT-4o-mini at home' pick for 32 GB.", search:"mistral small 3.2" },
+  { id:"gemma3-27b", name:"Gemma 3 27B", org:"Google", hf:"google/gemma-3-27b-it", params:27.4, L:62, KH:16, HD:128, kvScale:0.45, ctx:131072, cats:["general","vision"], tier:"B+", blurb:"Google's largest open weight — strong multilingual + vision on 32 GB.", search:"gemma 3 27b" },
+  { id:"qwen3-30b-a3b", name:"Qwen3 30B-A3B (2507)", org:"Alibaba", hf:"Qwen/Qwen3-30B-A3B-Instruct-2507", params:30.5, active:3.3, L:48, KH:4, HD:128, ctx:262144, cats:["general","moe"], tier:"A", blurb:"The Mac MoE darling: 32B-class answers at 3B decode speed. If it fits, run it.", search:"qwen3 30b a3b 2507" },
+  { id:"qwen3-coder-30b", name:"Qwen3-Coder 30B-A3B", org:"Alibaba", hf:"Qwen/Qwen3-Coder-30B-A3B-Instruct", params:30.5, active:3.3, L:48, KH:4, HD:128, ctx:262144, cats:["coding","moe"], tier:"A", blurb:"Local coding default in 2025/26 — fast agentic edits, 256K context.", search:"qwen3 coder 30b" },
+  { id:"qwen3-32b", name:"Qwen3 32B", org:"Alibaba", hf:"Qwen/Qwen3-32B", params:32.8, L:64, KH:8, HD:128, ctx:40960, cats:["general","reasoning"], tier:"A", blurb:"Dense flagship-lite; steadier than the MoE on hard multi-step prompts.", search:"qwen3 32b" },
+  { id:"qwen25-coder-32b", name:"Qwen2.5-Coder 32B", org:"Alibaba", hf:"Qwen/Qwen2.5-Coder-32B-Instruct", params:32.8, L:64, KH:8, HD:128, ctx:131072, cats:["coding"], tier:"A", blurb:"Dense coding classic — still the most predictable local code reviewer.", search:"qwen2.5 coder 32b" },
+  { id:"r1-qwen-32b", name:"R1 Distill Qwen 32B", org:"DeepSeek", hf:"deepseek-ai/DeepSeek-R1-Distill-Qwen-32B", params:32.8, L:64, KH:8, HD:128, ctx:131072, cats:["reasoning"], tier:"A", blurb:"The strongest reasoning you can hold in 24 GB of quantized weights.", search:"deepseek r1 distill qwen 32b" },
+  { id:"llama33-70b", name:"Llama 3.3 70B", org:"Meta", hf:"meta-llama/Llama-3.3-70B-Instruct", params:70.6, L:80, KH:8, HD:128, ctx:131072, cats:["general"], tier:"A", draft:"Llama 3.2 1B", blurb:"405B-class instruction following in a 70B. Wants 64 GB and patience.", search:"llama 3.3 70b" },
+  { id:"gptoss-120b", name:"gpt-oss-120b", org:"OpenAI", hf:"openai/gpt-oss-120b", params:117, active:5.1, L:36, KH:8, HD:64, kvScale:0.6, ctx:131072, cats:["reasoning","general","moe"], tier:"A+", quants:["mxfp4"], blurb:"o4-mini-adjacent reasoning that decodes fast (5.1B active). The 96–128 GB killer app.", search:"gpt-oss-120b" },
+  { id:"glm45-air", name:"GLM-4.5-Air 106B-A12B", org:"Z.ai", hf:"zai-org/GLM-4.5-Air", params:106, active:12, L:46, KH:8, HD:128, ctx:131072, cats:["general","coding","moe"], tier:"A+", quants:BIGMOE_Q, blurb:"Agentic MoE favorite — tool use and coding near frontier, at-home footprint.", search:"glm-4.5-air" },
+  { id:"llama4-scout", name:"Llama 4 Scout 109B-A17B", org:"Meta", hf:"meta-llama/Llama-4-Scout-17B-16E-Instruct", params:109, active:17, L:48, KH:8, HD:128, kvScale:0.7, ctx:1048576, cats:["general","vision","moe"], tier:"B+", quants:BIGMOE_Q, blurb:"Native multimodal MoE with a headline 10M context (memory says otherwise).", search:"llama 4 scout" },
+  { id:"qwen3-235b", name:"Qwen3 235B-A22B (2507)", org:"Alibaba", hf:"Qwen/Qwen3-235B-A22B-Instruct-2507", params:235, active:22, L:94, KH:4, HD:128, ctx:262144, cats:["general","reasoning","moe"], tier:"A+", quants:BIGMOE_Q, blurb:"Open-weights frontier class — a reason the 256 GB Ultra configuration exists.", search:"qwen3 235b a22b" },
+  { id:"r1-671b", name:"DeepSeek R1-0528 671B", org:"DeepSeek", hf:"deepseek-ai/DeepSeek-R1-0528", params:671, active:37, L:61, KH:1, HD:1, kvBytesTok:71680, ctx:131072, cats:["reasoning","moe"], tier:"S", quants:["ud1","ud2","q4"], blurb:"The whole R1, at home. Dynamic quants make it real on a 256–512 GB M3 Ultra.", search:"deepseek r1 0528" },
+];
+
+const TIER_RANK = { "S":7, "A+":6, "A":5, "B+":4, "B":3, "C+":2, "C":1 };
+const CATS = [["all","ALL"],["general","GENERAL"],["coding","CODING"],["reasoning","REASONING"],["vision","VISION"],["moe","MoE"],["tiny","TINY ≤4B"]];
+const CTX_STOPS = [2048,4096,8192,16384,32768,65536,131072,262144];
+const TABLE_CTX = 8192;
+
+/* ============================ math ============================ */
+const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
+
+function vramBudget(ram){ return ram <= 36 ? ram*(2/3) : ram*0.75; }
+function raisedBudget(ram){ return ram - clamp(ram*0.08, 6, 24); }
+function kvPerTokGB(m){
+  const bytes = m.kvBytesTok ?? (2 * m.L * m.KH * m.HD * 2 * (m.kvScale ?? 1));
+  return bytes / 1e9;
+}
+function weightsGB(m,qid){ return m.params * QUANTS[qid].bpw / 8 * 1.03; }
+function needGB(m,qid,ctx){ const w = weightsGB(m,qid); return { w, kv: kvPerTokGB(m)*ctx, oh: 1.0 + w*0.04 }; }
+function totalGB(n){ return n.w + n.kv + n.oh; }
+
+function fitStatus(m,qid,ctx,ram){
+  const t = totalGB(needGB(m,qid,ctx));
+  const b = vramBudget(ram), rb = raisedBudget(ram);
+  if (t <= b*0.92) return { code:"fit",   label:"FITS",        cls:"st-fit" };
+  if (t <= b)      return { code:"tight", label:"TIGHT",       cls:"st-tight" };
+  if (ram >= 32 && t <= rb) return { code:"raise", label:"RAISE LIMIT", cls:"st-raise" };
+  return { code:"no", label:"NO FIT", cls:"st-no" };
+}
+
+function decodeTokS(m,qid,chip){
+  const q = QUANTS[qid];
+  const active = m.active ?? m.params;
+  const bytes = active * q.bpw / 8;                    // GB touched per token
+  const eff = (q.engine === "MLX" ? 0.60 : 0.50) * (m.active ? 0.70 : 1);
+  const bwBound = chip.bw * eff / bytes;
+  const computeCap = 260 * Math.pow(chip.gpu/40, 0.7) / Math.pow(active, 0.6);
+  return Math.min(bwBound, computeCap);
+}
+
+function maxCtxFit(m,qid,ram){
+  const w = weightsGB(m,qid), oh = 1.0 + w*0.04;
+  const room = raisedBudget(ram) - w - oh;             // best case (limit raised)
+  if (room <= 0) return 0;
+  return clamp(Math.floor(room / kvPerTokGB(m)), 0, m.ctx);
+}
+
+function quantList(m){ return m.quants ?? DENSE_Q; }
+function recQuant(m,ram){
+  const list = quantList(m);
+  if (list.length === 1) return list[0];
+  const pref = (m.params <= 4.5 ? ["q8","q6","mlx4","q4","q3"] : ["q6","mlx4","q4","q3","ud2","ud1"])
+    .filter(q => list.includes(q));
+  const order = ["fit","tight","raise"];
+  for (const want of order) for (const q of pref)
+    if (fitStatus(m,q,TABLE_CTX,ram).code === want) return q;
+  return list.reduce((a,b)=> QUANTS[a].bpw <= QUANTS[b].bpw ? a : b);
+}
+
+/* ============================ state ============================ */
+const state = {
+  chip: "m4pro", ram: 48,
+  q: "", cat: "all", hideNoFit: false, sort: "best",
+  sel: null, selQuant: null, selCtx: 8192,
+};
+const chip = ()=> CHIPS.find(c=>c.id===state.chip);
+const fmt1 = x => x >= 100 ? Math.round(x).toString() : x.toFixed(1);
+const fmtGB = x => x >= 100 ? Math.round(x)+" GB" : x.toFixed(1)+" GB";
+const fmtCtx = t => t >= 1048576 ? (t/1048576)+"M" : t >= 1024 ? Math.round(t/1024)+"K" : t;
+
+/* ============================ render: machine ============================ */
+const $ = id => document.getElementById(id);
+
+function initMachine(){
+  const sel = $("chipSel");
+  let gen = "";
+  let html = "";
+  for (const c of CHIPS){
+    if (c.gen !== gen){ if (gen) html += "</optgroup>"; html += `<optgroup label="${c.gen} family">`; gen = c.gen; }
+    html += `<option value="${c.id}">${c.name} — ${c.bw} GB/s</option>`;
+  }
+  sel.innerHTML = html + "</optgroup>";
+  sel.value = state.chip;
+  sel.onchange = () => {
+    state.chip = sel.value;
+    const c = chip();
+    if (!c.ram.includes(state.ram)) state.ram = c.ram[Math.floor(c.ram.length/2)] ?? c.ram[0];
+    renderAll();
+  };
+  $("ramSel").onchange = e => { state.ram = +e.target.value; renderAll(); };
+}
+
+function renderMachine(){
+  const c = chip();
+  $("ramSel").innerHTML = c.ram.map(r=>`<option value="${r}" ${r===state.ram?"selected":""}>${r} GB unified</option>`).join("");
+  $("chipSpecs").innerHTML = `
+    <div class="spec"><div class="k">Bandwidth</div><div class="v">${c.bw} <small>GB/s</small></div></div>
+    <div class="spec"><div class="k">GPU cores</div><div class="v">${c.gpu}</div></div>
+    <div class="spec"><div class="k">GPU budget</div><div class="v">${fmtGB(vramBudget(state.ram))}</div></div>
+    <div class="spec"><div class="k">Raised max</div><div class="v">${state.ram>=32?fmtGB(raisedBudget(state.ram)):"—"} <small>${state.ram>=32?"sysctl":""}</small></div></div>`;
+}
+
+function renderReadouts(){
+  const c = chip();
+  const fitting = MODELS.filter(m => fitStatus(m, recQuant(m,state.ram), TABLE_CTX, state.ram).code !== "no").length;
+  const best = [...MODELS].filter(m => fitStatus(m, recQuant(m,state.ram), TABLE_CTX, state.ram).code === "fit")
+    .sort((a,b)=>TIER_RANK[b.tier]-TIER_RANK[a.tier])[0];
+  $("readouts").innerHTML = `
+    <div class="readout"><div class="k">Machine</div><div class="v">${c.name} · ${state.ram}<small> GB</small></div></div>
+    <div class="readout"><div class="k">Memory BW</div><div class="v">${c.bw}<small> GB/s</small></div></div>
+    <div class="readout"><div class="k">GPU budget</div><div class="v">${fmtGB(vramBudget(state.ram))}</div></div>
+    <div class="readout"><div class="k">Models runnable</div><div class="v"><span class="hot">${fitting}</span><small> / ${MODELS.length}</small></div></div>
+    <div class="readout"><div class="k">Best comfortable pick</div><div class="v">${best ? best.name : "—"}</div></div>`;
+}
+
+/* ============================ render: table ============================ */
+function rowsData(){
+  const c = chip();
+  let list = MODELS.map(m => {
+    const q = recQuant(m, state.ram);
+    const n = needGB(m,q,TABLE_CTX);
+    const st = fitStatus(m,q,TABLE_CTX,state.ram);
+    return { m, q, need: totalGB(n), st, spd: decodeTokS(m,q,c), maxCtx: maxCtxFit(m,q,state.ram) };
+  });
+  const s = state.q.trim().toLowerCase();
+  if (s) list = list.filter(r => (r.m.name+" "+r.m.org+" "+r.m.hf).toLowerCase().includes(s));
+  if (state.cat !== "all") list = list.filter(r => r.m.cats.includes(state.cat));
+  if (state.hideNoFit) list = list.filter(r => r.st.code !== "no");
+  const stRank = { fit:0, tight:1, raise:2, no:3 };
+  const sorts = {
+    best:    (a,b)=> stRank[a.st.code]-stRank[b.st.code] || TIER_RANK[b.m.tier]-TIER_RANK[a.m.tier] || b.spd-a.spd,
+    quality: (a,b)=> TIER_RANK[b.m.tier]-TIER_RANK[a.m.tier] || a.need-b.need,
+    speed:   (a,b)=> b.spd-a.spd,
+    size:    (a,b)=> a.need-b.need,
+    params:  (a,b)=> a.m.params-b.m.params,
+  };
+  return list.sort(sorts[state.sort]);
+}
+
+function renderTable(){
+  const list = rowsData();
+  const maxSpd = Math.max(...list.map(r=>r.spd), 1);
+  $("tblAux").textContent = `${list.length} SHOWN · CTX 8K`;
+  if (!list.length){
+    $("rows").innerHTML = `<tr class="empty-row"><td colspan="8">Nothing matches — clear a filter or add RAM (if only it were that easy).</td></tr>`;
+    return;
+  }
+  $("rows").innerHTML = list.map(r => {
+    const m = r.m;
+    const tags = m.cats.filter(t=>t!=="general").map(t=>`<span class="tag ${t==="moe"?"moe":""}">${t==="moe"?"MoE":t}</span>`).join("");
+    const active = m.active ? ` · ${m.active}B act` : "";
+    const noFit = r.st.code === "no";
+    return `<tr data-id="${m.id}" class="${state.sel===m.id?"sel":""}" tabindex="0" role="button" aria-label="Open ${m.name} on the bench">
+      <td>
+        <div class="m-name">${m.name}</div>
+        <div class="m-sub"><span>${m.org} · ${m.params}B${active}</span>${tags}</div>
+      </td>
+      <td><span class="quant-chip">${QUANTS[r.q].label}</span></td>
+      <td class="mono ${noFit?"dim":""}">${fmtGB(r.need)}</td>
+      <td><span class="st ${r.st.cls}"><span class="dot"></span>${r.st.label}</span></td>
+      <td>
+        <div class="speed">
+          <div class="track"><div class="fill" style="width:${noFit?0:clamp(r.spd/maxSpd*100,2,100)}%"></div></div>
+          <div class="val">${noFit?"—":fmt1(r.spd)} <small>tok/s</small></div>
+        </div>
+      </td>
+      <td class="mono ${r.maxCtx<2048?"dim":""}">${r.maxCtx<2048 ? (r.maxCtx?"<2K":"—") : fmtCtx(r.maxCtx)}</td>
+      <td><span class="tier">${m.tier}</span></td>
+      <td><a class="hf-link" href="https://huggingface.co/${m.hf}" target="_blank" rel="noopener" onclick="event.stopPropagation()">HF ↗</a></td>
+    </tr>`;
+  }).join("");
+  for (const tr of $("rows").querySelectorAll("tr[data-id]")){
+    tr.onclick = ()=> selectModel(tr.dataset.id);
+    tr.onkeydown = e => { if (e.key==="Enter"||e.key===" "){ e.preventDefault(); selectModel(tr.dataset.id); } };
+  }
+}
+
+/* ============================ render: bench ============================ */
+function selectModel(id){
+  const m = MODELS.find(x=>x.id===id);
+  state.sel = id;
+  state.selQuant = recQuant(m, state.ram);
+  state.selCtx = Math.min(8192, m.ctx);
+  renderTable(); renderBench();
+  $("bench").scrollIntoView({ behavior:"smooth", block:"nearest" });
+}
+
+function ctxStopsFor(m){
+  const stops = CTX_STOPS.filter(x=>x<=m.ctx);
+  if (!stops.includes(m.ctx) && m.ctx <= 262144) stops.push(m.ctx);
+  return stops.sort((a,b)=>a-b);
+}
+
+function renderBench(){
+  const m = MODELS.find(x=>x.id===state.sel);
+  if (!m) return;
+  const c = chip();
+  const qid = state.selQuant, ctx = state.selCtx;
+  const n = needGB(m,qid,ctx), tot = totalGB(n);
+  const st = fitStatus(m,qid,ctx,state.ram);
+  const budget = vramBudget(state.ram), raised = raisedBudget(state.ram);
+  const stops = ctxStopsFor(m);
+  const stopIdx = stops.indexOf(clamp(ctx, stops[0], stops[stops.length-1]));
+
+  $("benchAux").textContent = `${c.name} · ${state.ram} GB`;
+
+  const qBtns = quantList(m).map(q => {
+    const w = weightsGB(m,q);
+    return `<button class="qbtn ${q===qid?"on":""}" data-q="${q}" title="${QUANTS[q].note}">${QUANTS[q].label}<span class="sz">${fmtGB(w)}</span></button>`;
+  }).join("");
+
+  /* meter geometry: scale = total RAM */
+  const scale = state.ram;
+  const pct = x => clamp(x/scale*100, 0, 100);
+  const wPct = pct(n.w), kvPct = pct(n.kv), ohPct = pct(n.oh);
+  const gap = 0.18; // ~2px expressed in %
+  const segs = [
+    { name:"Weights",  gb:n.w,  left:0,                    w:wPct,  col:"var(--c-weights)", first:true },
+    { name:"KV cache", gb:n.kv, left:wPct+gap,             w:Math.max(kvPct-gap,0.1), col:"var(--c-kv)" },
+    { name:"Overhead", gb:n.oh, left:wPct+kvPct+gap*2,     w:Math.max(ohPct-gap,0.1), col:"var(--c-over)" },
+  ];
+  const segHtml = segs.map(s => `
+    <div class="seg ${s.first?"first":""}" data-tip="${s.name}: ${fmtGB(s.gb)}" data-tip2="${(s.gb/scale*100).toFixed(1)}% of ${state.ram} GB RAM"
+      style="left:${s.left}%;width:${s.w}%;background:${s.col};">
+      ${s.w > 14 ? `<span class="seg-label">${s.name} ${fmtGB(s.gb)}</span>` : ""}
+    </div>`).join("");
+
+  const verdictText = {
+    fit:   `Comfortable. ${fmtGB(budget - tot)} of GPU budget left — room for the app, a browser, and longer context.`,
+    tight: `It loads, barely. Close heavy apps, keep context at ${fmtCtx(ctx)} or below, and consider one quant step down.`,
+    raise: `Over the default Metal limit but inside RAM. Raise the wired limit: <code>sudo sysctl iogpu.wired_limit_mb=${Math.round(raised*1024)}</code> (resets on reboot), then load.`,
+    no:    `Needs ${fmtGB(tot)} — beyond this machine even with the limit raised. Try a smaller quant, a smaller sibling, or more RAM at checkout.`,
+  }[st.code];
+
+  $("benchBody").innerHTML = `
+    <div class="bench-title">${m.name}</div>
+    <div class="bench-sub">${m.org} · ${m.params}B params${m.active?` (${m.active}B active/tok)`:""} · ${m.L} layers · native ctx ${fmtCtx(m.ctx)} · <a href="https://huggingface.co/${m.hf}" target="_blank" rel="noopener">huggingface.co/${m.hf} ↗</a></div>
+    <p class="bench-blurb">${m.blurb}</p>
+
+    <div class="qgrid" role="group" aria-label="Quantization">${qBtns}</div>
+
+    <div class="ctx-row">
+      <label for="ctxRange">Context</label>
+      <input type="range" id="ctxRange" min="0" max="${stops.length-1}" step="1" value="${stopIdx<0?2:stopIdx}" aria-label="Context length">
+      <span class="ctx-val">${fmtCtx(ctx)} tok</span>
+    </div>
+
+    <div class="meter-wrap">
+      <div class="meter-head">
+        <span class="t">Unified memory @ ${fmtCtx(ctx)} context</span>
+        <span class="r">needs ${fmtGB(tot)} / budget ${fmtGB(budget)}</span>
+      </div>
+      <div class="meter" id="meter">
+        ${segHtml}
+        <div class="tickline budget" style="left:${pct(budget)}%" data-tip="Default GPU budget: ${fmtGB(budget)}" data-tip2="macOS Metal wired-memory default"></div>
+        ${state.ram>=32 ? `<div class="tickline raised" style="left:${pct(raised)}%" data-tip="Raised limit: ${fmtGB(raised)}" data-tip2="via sysctl iogpu.wired_limit_mb"></div>`:""}
+      </div>
+      <div class="meter-ticklbl">
+        <span class="${pct(budget)>72?"edge":""}" style="left:${pct(budget)}%">▲ budget ${fmtGB(budget)}</span>
+        ${state.ram>=32 ? `<span class="row2 ${pct(raised)>72?"edge":""}" style="left:${pct(raised)}%">▲ raised ${fmtGB(raised)}</span>`:""}
+        <span class="edge" style="left:100%">RAM ${state.ram} GB</span>
+      </div>
+      <div class="legend">
+        <span class="li"><span class="sw" style="background:var(--c-weights)"></span>Weights <b>${fmtGB(n.w)}</b></span>
+        <span class="li"><span class="sw" style="background:var(--c-kv)"></span>KV cache <b>${fmtGB(n.kv)}</b></span>
+        <span class="li"><span class="sw" style="background:var(--c-over)"></span>Runtime overhead <b>${fmtGB(n.oh)}</b></span>
+      </div>
+    </div>
+
+    <div class="verdict">
+      <span class="st ${st.cls}"><span class="dot"></span>${st.label}</span>
+      <span>${verdictText} Est. decode ≈ <b class="mono">${fmt1(decodeTokS(m,qid,c))} tok/s</b>.</span>
+    </div>`;
+
+  for (const b of $("benchBody").querySelectorAll(".qbtn"))
+    b.onclick = ()=>{ state.selQuant = b.dataset.q; renderBench(); };
+  $("ctxRange").oninput = e => { state.selCtx = stops[+e.target.value]; renderBench(); };
+  bindTips($("benchBody"));
+
+  renderTune(m, qid, ctx, st);
+}
+
+/* ============================ render: tune sheet ============================ */
+function renderTune(m, qid, ctx, st){
+  const c = chip();
+  const q = QUANTS[qid];
+  const n = needGB(m,qid,ctx);
+  const budget = vramBudget(state.ram);
+  const engMLX = q.engine === "MLX";
+  const noFit = st.code === "no";
+  const tightish = st.code === "tight" || st.code === "raise";
+  const kvHeavy = n.kv > budget * 0.15;
+  const kvQuant = (tightish || kvHeavy);
+  const batch = c.gpu >= 30 ? 1024 : 512;
+  const offload = noFit
+    ? (()=>{ const r = clamp(raisedBudget(state.ram) / totalGB(n), 0, 1); return r > 0.4 ? `Partial — ~${Math.floor(m.L*r)}/${m.L} layers` : "—"; })()
+    : "MAX (all layers on GPU)";
+
+  const rows = [
+    ["Runtime", engMLX ? "MLX (Apple silicon native)" : "llama.cpp / GGUF + Metal",
+      engMLX ? "Fastest engine on Mac; pick the MLX build in the download list" : "Pick the GGUF build; Metal backend is automatic"],
+    ["Quantization", q.label, q.note],
+    ["Context length", ctx.toLocaleString(), kvQuant ? "KV is a big share of memory here — don't set higher than you use" : "Raise only if you actually paste long documents"],
+    ["GPU offload", offload, noFit ? "CPU-split layers run much slower — smaller quant is usually better" : "Keep the whole graph on the GPU"],
+    ["KV cache quant", kvQuant ? "Q8_0 (halves KV)" : "F16 (off)", kvQuant ? (engMLX ? "Set KV cache quantization to 8-bit" : "Requires Flash Attention ON in llama.cpp") : "You have headroom; full-precision KV is slightly better"],
+    ["Flash Attention", engMLX ? "n/a (built in)" : "ON", engMLX ? "" : "Faster long-context + enables KV quant"],
+    ["CPU threads", String(c.p), "Match performance cores; more just burns efficiency cores"],
+    ["Eval batch size", String(batch), "Prompt-ingestion chunk; bigger helps on big GPUs"],
+    ["Keep in memory (mlock)", st.code === "fit" ? "ON" : "OFF", st.code === "fit" ? "Stops macOS paging the weights out" : "Tight fits + mlock can stall the whole system"],
+  ];
+  if (m.draft) rows.push(["Speculative decoding", m.draft + " (draft)", "Load the small sibling as draft model for ~1.5–2× decode"]);
+
+  const notes = [
+    `Find it in LM Studio: search <code>${m.search}</code>${engMLX ? " and choose the <b>MLX</b> build" : " and choose the <b>GGUF</b> build"}.`,
+    st.code === "raise" ? `Before loading, run <code>sudo sysctl iogpu.wired_limit_mb=${Math.round(raisedBudget(state.ram)*1024)}</code> in Terminal (reverts on reboot).` : null,
+    m.cats.includes("moe") ? "MoE: all experts sit in memory, only some fire per token — that's why it's fast for its size, not small for its size." : null,
+    m.cats.includes("reasoning") ? "Reasoning model: budget 2–10× output tokens for its thinking phase; short answers still stream fast." : null,
+    m.cats.includes("vision") ? "Vision build: images consume extra context; keep a 2–4K margin for attachments." : null,
+    `Long prompts: ingestion runs at GPU-compute speed (${c.gpu} cores), so first-token latency grows with pasted text even when decode is quick.`,
+  ].filter(Boolean);
+
+  $("tuneBody").innerHTML = `
+    <div class="tune-rows">
+      ${rows.map(r=>`<div class="tune-row"><span class="k">${r[0]}</span><span class="v">${r[1]}${r[2]?`<small>${r[2]}</small>`:""}</span></div>`).join("")}
+    </div>
+    <ul class="tune-notes">${notes.map(x=>`<li>${x}</li>`).join("")}</ul>
+    <button class="btn" id="copyBtn">⧉ Copy tune sheet</button>`;
+
+  $("copyBtn").onclick = async ()=>{
+    const txt = [
+      `LM Studio tune sheet — ${m.name} on ${c.name} · ${state.ram} GB`,
+      `Generated by SILICON/FIT (estimates)`,
+      ``,
+      ...rows.map(r=>`${r[0]}: ${r[1]}`),
+      ``,
+      `Model: https://huggingface.co/${m.hf}`,
+      `Memory: weights ${fmtGB(n.w)} + KV ${fmtGB(n.kv)} + overhead ${fmtGB(n.oh)} = ${fmtGB(totalGB(n))} (budget ${fmtGB(budget)})`,
+      `Est. decode: ~${fmt1(decodeTokS(m,qid,c))} tok/s`,
+    ].join("\n");
+    const btn = $("copyBtn");
+    try { await navigator.clipboard.writeText(txt); }
+    catch { const ta=document.createElement("textarea"); ta.value=txt; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); }
+    btn.textContent = "✓ Copied"; btn.classList.add("ok");
+    setTimeout(()=>{ btn.textContent = "⧉ Copy tune sheet"; btn.classList.remove("ok"); }, 1600);
+  };
+}
+
+/* ============================ tooltip ============================ */
+const tip = $("tip");
+function bindTips(root){
+  for (const el of root.querySelectorAll("[data-tip]")){
+    el.addEventListener("mousemove", e=>{
+      tip.style.display = "block";
+      tip.innerHTML = el.dataset.tip + (el.dataset.tip2 ? `<div class="t2">${el.dataset.tip2}</div>` : "");
+      const x = clamp(e.clientX+14, 8, window.innerWidth-270);
+      tip.style.left = x+"px"; tip.style.top = (e.clientY+16)+"px";
+    });
+    el.addEventListener("mouseleave", ()=> tip.style.display="none");
+  }
+}
+
+/* ============================ filters ============================ */
+function initFilters(){
+  $("catPills").innerHTML = CATS.map(([v,l])=>`<button class="pill ${v===state.cat?"on":""}" data-v="${v}">${l}</button>`).join("");
+  for (const p of $("catPills").querySelectorAll(".pill"))
+    p.onclick = ()=>{ state.cat = p.dataset.v;
+      $("catPills").querySelectorAll(".pill").forEach(x=>x.classList.toggle("on", x===p));
+      renderTable(); };
+  $("q").oninput = e => { state.q = e.target.value; renderTable(); };
+  $("hideNoFit").onchange = e => { state.hideNoFit = e.target.checked; renderTable(); };
+  $("sortSel").onchange = e => { state.sort = e.target.value; renderTable(); };
+}
+
+/* ============================ boot ============================ */
+function renderAll(){
+  renderMachine(); renderReadouts(); renderTable();
+  if (state.sel){ state.selQuant = quantList(MODELS.find(x=>x.id===state.sel)).includes(state.selQuant) ? state.selQuant : null;
+    if (!state.selQuant) state.selQuant = recQuant(MODELS.find(x=>x.id===state.sel), state.ram);
+    renderBench(); }
+}
+initMachine(); initFilters(); renderAll();
+</script>
+</body>
+</html>
