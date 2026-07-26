@@ -438,6 +438,8 @@ const CHIPS = [
   { id:"m4pro",   gen:"M4", name:"M4 Pro",            bw:273, gpu:20, p:10, ram:[24,48,64] },
   { id:"m4max32", gen:"M4", name:"M4 Max (32-core)",  bw:410, gpu:32, p:10, ram:[36,64] },
   { id:"m4max40", gen:"M4", name:"M4 Max (40-core)",  bw:546, gpu:40, p:12, ram:[48,64,128] },
+  { id:"m5",      gen:"M5", name:"M5",                bw:153, gpu:10, p:4,  ram:[16,24,32],
+    note:"GPU Neural Accelerators make prompt ingestion ~3–4× faster than the core count suggests; decode speed still follows bandwidth." },
 ];
 
 const QUANTS = {
@@ -468,7 +470,7 @@ const MODELS = [
   { id:"phi4", name:"Phi-4 14B", org:"Microsoft", hf:"microsoft/phi-4", params:14.7, L:40, KH:10, HD:128, ctx:16384, cats:["general"], tier:"B+", blurb:"Textbook-trained 14B; superb STEM answers, short 16K context ceiling.", search:"phi-4" },
   { id:"qwen3-14b", name:"Qwen3 14B", org:"Alibaba", hf:"Qwen/Qwen3-14B", params:14.8, L:40, KH:8, HD:128, ctx:40960, cats:["general","reasoning"], tier:"B+", blurb:"The dense mid-weight with thinking mode; great 24–32 GB choice.", search:"qwen3 14b" },
   { id:"r1-qwen-14b", name:"R1 Distill Qwen 14B", org:"DeepSeek", hf:"deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", params:14.8, L:48, KH:8, HD:128, ctx:131072, cats:["reasoning"], tier:"B+", blurb:"Chain-of-thought distilled from R1 — shows its work, spends tokens doing it.", search:"deepseek r1 distill qwen 14b" },
-  { id:"gptoss-20b", name:"gpt-oss-20b", org:"OpenAI", hf:"openai/gpt-oss-20b", params:21, active:3.6, L:24, KH:8, HD:64, kvScale:0.6, ctx:131072, cats:["reasoning","general","moe"], tier:"B+", quants:["mxfp4"], blurb:"MoE with 3.6B active — near-14B quality at small-model speed. Ships MXFP4; 16 GB is enough.", search:"gpt-oss-20b" },
+  { id:"gptoss-20b", name:"gpt-oss-20b", org:"OpenAI", hf:"openai/gpt-oss-20b", params:21, active:3.6, L:24, KH:8, HD:64, kvScale:0.6, ctx:131072, cats:["reasoning","general","moe"], tier:"B+", quants:["mxfp4"], blurb:"MoE with 3.6B active — near-14B quality at small-model speed. Squeezes onto 16 GB with the limit raised; happy on 24 GB.", search:"gpt-oss-20b" },
   { id:"mistral-small-24b", name:"Mistral Small 3.2 24B", org:"Mistral", hf:"mistralai/Mistral-Small-3.2-24B-Instruct-2506", params:24, L:40, KH:8, HD:128, ctx:131072, cats:["general","vision"], tier:"B+", blurb:"Workhorse 24B with vision; the 'GPT-4o-mini at home' pick for 32 GB.", search:"mistral small 3.2" },
   { id:"gemma3-27b", name:"Gemma 3 27B", org:"Google", hf:"google/gemma-3-27b-it", params:27.4, L:62, KH:16, HD:128, kvScale:0.45, ctx:131072, cats:["general","vision"], tier:"B+", blurb:"Google's largest open weight — strong multilingual + vision on 32 GB.", search:"gemma 3 27b" },
   { id:"qwen3-30b-a3b", name:"Qwen3 30B-A3B (2507)", org:"Alibaba", hf:"Qwen/Qwen3-30B-A3B-Instruct-2507", params:30.5, active:3.3, L:48, KH:4, HD:128, ctx:262144, cats:["general","moe"], tier:"A", blurb:"The Mac MoE darling: 32B-class answers at 3B decode speed. If it fits, run it.", search:"qwen3 30b a3b 2507" },
@@ -493,13 +495,14 @@ const TABLE_CTX = 8192;
 const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
 
 function vramBudget(ram){ return ram <= 36 ? ram*(2/3) : ram*0.75; }
-function raisedBudget(ram){ return ram - clamp(ram*0.08, 6, 24); }
+function raisedBudget(ram){ return ram - clamp(ram*0.15, 3, 24); }
+function canRaise(ram){ return raisedBudget(ram) > vramBudget(ram); }
 function kvPerTokGB(m){
   const bytes = m.kvBytesTok ?? (2 * m.L * m.KH * m.HD * 2 * (m.kvScale ?? 1));
   return bytes / 1e9;
 }
 function weightsGB(m,qid){ return m.params * QUANTS[qid].bpw / 8 * 1.03; }
-function needGB(m,qid,ctx){ const w = weightsGB(m,qid); return { w, kv: kvPerTokGB(m)*ctx, oh: 1.0 + w*0.04 }; }
+function needGB(m,qid,ctx){ const w = weightsGB(m,qid); return { w, kv: kvPerTokGB(m)*ctx, oh: 0.6 + w*0.03 }; }
 function totalGB(n){ return n.w + n.kv + n.oh; }
 
 function fitStatus(m,qid,ctx,ram){
@@ -507,7 +510,7 @@ function fitStatus(m,qid,ctx,ram){
   const b = vramBudget(ram), rb = raisedBudget(ram);
   if (t <= b*0.92) return { code:"fit",   label:"FITS",        cls:"st-fit" };
   if (t <= b)      return { code:"tight", label:"TIGHT",       cls:"st-tight" };
-  if (ram >= 32 && t <= rb) return { code:"raise", label:"RAISE LIMIT", cls:"st-raise" };
+  if (canRaise(ram) && t <= rb) return { code:"raise", label:"RAISE LIMIT", cls:"st-raise" };
   return { code:"no", label:"NO FIT", cls:"st-no" };
 }
 
@@ -522,8 +525,8 @@ function decodeTokS(m,qid,chip){
 }
 
 function maxCtxFit(m,qid,ram){
-  const w = weightsGB(m,qid), oh = 1.0 + w*0.04;
-  const room = raisedBudget(ram) - w - oh;             // best case (limit raised)
+  const n = needGB(m,qid,0);
+  const room = raisedBudget(ram) - n.w - n.oh;         // best case (limit raised)
   if (room <= 0) return 0;
   return clamp(Math.floor(room / kvPerTokGB(m)), 0, m.ctx);
 }
@@ -580,7 +583,8 @@ function renderMachine(){
     <div class="spec"><div class="k">Bandwidth</div><div class="v">${c.bw} <small>GB/s</small></div></div>
     <div class="spec"><div class="k">GPU cores</div><div class="v">${c.gpu}</div></div>
     <div class="spec"><div class="k">GPU budget</div><div class="v">${fmtGB(vramBudget(state.ram))}</div></div>
-    <div class="spec"><div class="k">Raised max</div><div class="v">${state.ram>=32?fmtGB(raisedBudget(state.ram)):"—"} <small>${state.ram>=32?"sysctl":""}</small></div></div>`;
+    <div class="spec"><div class="k">Raised max</div><div class="v">${canRaise(state.ram)?fmtGB(raisedBudget(state.ram)):"—"} <small>${canRaise(state.ram)?"sysctl":""}</small></div></div>`
+    + (c.note ? `<div class="spec" style="grid-column:1/-1"><div class="k">${c.name} note</div><div class="v" style="font-family:var(--f-body);font-size:11.5px;line-height:1.5;color:var(--ink-2)">${c.note}</div></div>` : "");
 }
 
 function renderReadouts(){
@@ -736,11 +740,11 @@ function renderBench(){
       <div class="meter" id="meter">
         ${segHtml}
         <div class="tickline budget" style="left:${pct(budget)}%" data-tip="Default GPU budget: ${fmtGB(budget)}" data-tip2="macOS Metal wired-memory default"></div>
-        ${state.ram>=32 ? `<div class="tickline raised" style="left:${pct(raised)}%" data-tip="Raised limit: ${fmtGB(raised)}" data-tip2="via sysctl iogpu.wired_limit_mb"></div>`:""}
+        ${canRaise(state.ram) ? `<div class="tickline raised" style="left:${pct(raised)}%" data-tip="Raised limit: ${fmtGB(raised)}" data-tip2="via sysctl iogpu.wired_limit_mb"></div>`:""}
       </div>
       <div class="meter-ticklbl">
         <span class="${pct(budget)>72?"edge":""}" style="left:${pct(budget)}%">▲ budget ${fmtGB(budget)}</span>
-        ${state.ram>=32 ? `<span class="row2 ${pct(raised)>72?"edge":""}" style="left:${pct(raised)}%">▲ raised ${fmtGB(raised)}</span>`:""}
+        ${canRaise(state.ram) ? `<span class="row2 ${pct(raised)>72?"edge":""}" style="left:${pct(raised)}%">▲ raised ${fmtGB(raised)}</span>`:""}
         <span class="edge" style="left:100%">RAM ${state.ram} GB</span>
       </div>
       <div class="legend">
